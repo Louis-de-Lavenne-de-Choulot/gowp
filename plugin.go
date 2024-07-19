@@ -6,6 +6,7 @@ import (
 	"plugin"
 
 	_ "github.com/Louis-de-Lavenne-de-Choulot/gowp_objects"
+	lib "github.com/Louis-de-Lavenne-de-Choulot/gowp_objects"
 )
 
 func main() {
@@ -31,7 +32,7 @@ func main() {
 
 	// 3. Assert that loaded symbol is of a desired type
 	// in this case interface type Greeter (defined above)
-	pluginInit, ok := symPluginInit.(func() gowp_objects.Route)
+	pluginInit, ok := symPluginInit.(func() lib.Route)
 	if !ok {
 		fmt.Println("unexpected type from module symbol")
 		os.Exit(1)
