@@ -1,0 +1,5 @@
+
+/plugins
+/files/administration
+*.sqlite3-query
+*.db

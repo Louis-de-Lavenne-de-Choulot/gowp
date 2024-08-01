@@ -1,0 +1,17 @@
+/* Add the menu template */
+#menu {
+    background-color: #333;
+    color: #fff;
+    padding: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+#menu a {
+    color: #fff;
+    text-decoration: none;
+    margin: 0 10px;
+}
+#menu a:hover {
+    color: #ccc;
+}
