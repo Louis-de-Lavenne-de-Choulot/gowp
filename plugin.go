@@ -131,6 +131,7 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	file_language := fmt.Sprintf("%v", languages[0])
 	pluginPath := "./temp/" + headerFN + "/" + file_language + "/" + pluginFileName
+	pluginFinalPath := "./plugins/" + headerFN + "/" + file_language + "/" + pluginFileName
 	pluginFile, err := plugin.Open(pluginPath)
 	// Run Init and wait for []lib.RouteImport
 	if err != nil {
@@ -155,7 +156,7 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	routesImport := initFunc()
 	//push plugin to db
-	res, err := SERVER.DB.Exec("INSERT INTO plugin (name, version, author, description, path) VALUES (?, ?, ?, ?, ?)", pluginName, version, author, description, pluginPath)
+	res, err := SERVER.DB.Exec("INSERT INTO plugin (name, version, author, description, path) VALUES (?, ?, ?, ?, ?)", pluginName, version, author, description, pluginFinalPath)
 	if err != nil {
 		cleanUpPlugin(1, header.Filename, "", nil)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -200,50 +201,51 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 			// other == file is under /base_route/route
 			routePath = routePATHID
 		}
+		newPath := ""
+		if routeImport.PagePath != "" {
+			newPath = CONFIGMAP["ROOT_DIR"] + pluginName + routeImport.PagePath
+			os.MkdirAll(newPath[:strings.LastIndex(newPath, "/")], 0755)
+			//new io writer
+			writer, err := os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE, 0644)
+			if err != nil {
+				cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Error creating page file " + newPath + " ERROR: " + err.Error()))
+				return
+			}
+			//new io reader
+			reader, err := os.Open("./temp/" + headerFN + routeImport.PagePath)
+			if err != nil {
+				cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Error opening page file " + "./temp/" + headerFN + routeImport.PagePath + " ERROR: " + err.Error()))
+				return
+			}
+			//move page to CONFIGMAP["ROOT_DIR"]/plugin_name/
+			_, err = io.Copy(writer, reader)
+			if err != nil {
+				cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Error moving page to plugin folder " + "./temp" + routeImport.PagePath + " to " + newPath))
+				return
+			}
 
-		newPath := ROOT_DIR + pluginName + routeImport.PagePath
-		os.MkdirAll(newPath[:strings.LastIndex(newPath, "/")], 0755)
-		//new io writer
-		writer, err := os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE, 0644)
-		if err != nil {
-			cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error creating page file " + newPath + " ERROR: " + err.Error()))
-			return
+			//remove CONFIGMAP["ROOT_DIR"]
+			newPath = strings.Replace(newPath, CONFIGMAP["ROOT_DIR"], "", 1)
+			// add route to page table
+			res, err = SERVER.DB.Exec("INSERT INTO page (name) VALUES (?)", newPath)
+			if err != nil {
+				cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Error inserting page into database ERROR: " + err.Error()))
+				return
+			}
+			// get page ID
+			routeImport.PageID, _ = res.LastInsertId()
+			removeCalls = append(removeCalls, "DELETE FROM page WHERE id ="+strconv.Itoa(int(routeImport.PageID)))
 		}
-		//new io reader
-		reader, err := os.Open("./temp/" + headerFN + routeImport.PagePath)
-		if err != nil {
-			cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error opening page file " + "./temp/" + headerFN + routeImport.PagePath + " ERROR: " + err.Error()))
-			return
-		}
-		//move page to ROOT_DIR/plugin_name/
-		_, err = io.Copy(writer, reader)
-		if err != nil {
-			cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error moving page to plugin folder " + "./temp" + routeImport.PagePath + " to " + newPath))
-			return
-		}
-
-		//remove ROOT_DIR
-		newPath = strings.Replace(newPath, ROOT_DIR, "", 1)
-		// add route to page table
-		res, err = SERVER.DB.Exec("INSERT INTO page (name) VALUES (?)", newPath)
-		if err != nil {
-			cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error inserting page into database ERROR: " + err.Error()))
-			return
-		}
-		// get page ID
-		routeImport.PageID, _ = res.LastInsertId()
-		removeCalls = append(removeCalls, "DELETE FROM page WHERE id ="+strconv.Itoa(int(routeImport.PageID)))
-
 		// add route to routes table
-		res, err = SERVER.DB.Exec("INSERT INTO route (route_name, page_id) VALUES (?, ?)", routeImport.Name, routeImport.PageID)
+		res, err = SERVER.DB.Exec("INSERT INTO route (route_name, page_id, in_menu) VALUES (?, ?, ?)", routeImport.Slug, routeImport.PageID, routeImport.InMenu)
 		if err != nil {
 			cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -253,6 +255,18 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 		// get page ID
 		routeID, _ := res.LastInsertId()
 		removeCalls = append(removeCalls, "DELETE FROM route WHERE id ="+strconv.Itoa(int(routeID)))
+
+		// insert in route_role
+		_, err = SERVER.DB.Exec("INSERT INTO route_role (route_id, role_id) VALUES (?, ?)", routeID, routeImport.Role)
+		if err != nil {
+			cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Error inserting route_role into database ERROR: " + err.Error()))
+			return
+		}
+		// get page ID
+		routeRoleID, _ := res.LastInsertId()
+		removeCalls = append(removeCalls, "DELETE FROM route_role WHERE id ="+strconv.Itoa(int(routeRoleID)))
 
 		for _, routePathFunction := range routeImport.BoundFunctions {
 			// add route_path_plugin
@@ -267,11 +281,16 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 			routePluginID, _ := res.LastInsertId()
 			removeCalls = append(removeCalls, "DELETE FROM route_plugin WHERE id ="+strconv.Itoa(int(routePluginID)))
 		}
-		println("added route " + routeImport.Name + " with ID " + strconv.Itoa(int(routeID)))
-		tempMap[routeImport.Name] = routeID
+		println("added route " + routeImport.Slug + " with ID " + strconv.Itoa(int(routeID)))
+
+		tmpName := routeImport.Slug
+		if len(tmpName) > 0 && tmpName[0] == '/' {
+			tmpName = tmpName[1:]
+		}
+		tempMap[tmpName] = routeID
 
 		if routePath != -1 {
-			routeImport.Name = baseRoute + "/" + routeImport.Name
+			routeImport.Slug = baseRoute + "/" + routeImport.Slug
 			res, err = SERVER.DB.Exec("INSERT INTO route_path_route (route_path_id, route_id) VALUES (?, ?)", routePath, routeID)
 			if err != nil {
 				cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
@@ -283,13 +302,15 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 			routeLinkID, _ := res.LastInsertId()
 			removeCalls = append(removeCalls, "DELETE FROM route_path_route WHERE route_id ="+strconv.Itoa(int(routeLinkID)))
 		} else {
-			routeImport.Name = CONFIGMAP["DEFAULT_ROUTE"] + "/" + routeImport.Name
+			routeImport.Slug = CONFIGMAP["DEFAULT_ROUTE"] + "/" + routeImport.Slug
 		}
 
 		// get assigned route ID and add it to map[oldName]newID and to Route.PageID
 		route := lib.Route{
 			ID:             routeID,
-			Name:           routeImport.Name,
+			Title:          routeImport.Title,
+			Slug:           routeImport.Slug,
+			InMenu:         routeImport.InMenu,
 			PagePath:       newPath,
 			PageID:         routeID,
 			PageReferences: make(map[string]int64),
@@ -302,8 +323,20 @@ func addPlugin(w http.ResponseWriter, r *http.Request) {
 		routes = append(routes, route)
 	}
 
-	// FOREACH route import
+	// FOREACH route import set References and Menu Parent Page if exist
 	for _, route := range routes {
+		// Menu Parent Page
+		MenuParentPageID, ok := tempMap[route.Slug]
+		if ok {
+			// set Menu Parent Page
+			_, err = SERVER.DB.Exec("UPDATE route SET main_page = ? WHERE id = ?", MenuParentPageID, route.ID)
+			if err != nil {
+				cleanUpPlugin(2, header.Filename, pluginName, removeCalls)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Error updating route menu parent page into database, err " + err.Error()))
+				return
+			}
+		}
 		// FOREACH References in route import[i]
 		for strRef := range route.PageReferences {
 			route.PageReferences[strRef] = tempMap[strRef]
